@@ -27,7 +27,6 @@
 # COMMAND ----------
 
 # MAGIC %pip install -r requirements.txt
-# MAGIC %pip install langgraph langchain pydantic
 
 # COMMAND ----------
 
@@ -442,30 +441,9 @@ print(f"🔧 Sub-agent interfaces: {list(navigator.available_subagents.keys())}"
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Graph Visualization (FIXED)
+from IPython.display import Image, display
 
-# COMMAND ----------
-
-# FIXED: Proper graph visualization with error handling
-try:
-    from IPython.display import Image, display
-    print("🎨 Generating workflow visualization...")
-    
-    # This should work now without state errors
-    mermaid_png = navigator.graph.get_graph().draw_mermaid_png()
-    display(Image(mermaid_png))
-    print("✅ Graph visualization successful!")
-    
-except Exception as e:
-    print(f"❌ Visualization error: {e}")
-    
-    # Fallback text representation
-    print("\n📋 Text-based workflow:")
-    print("START → atc_main_agent → [emergency/normal] → atc_synthesize → END")
-
-# MAGIC %md
-# MAGIC ## Test Main Workflow
+display(Image(navigator.graph.get_graph().draw_mermaid_png()))
 
 # COMMAND ----------
 
@@ -495,8 +473,7 @@ async def run_tests():
     await test_main_workflow()
 
 # Run the tests
-import asyncio
-asyncio.run(run_tests())
+await run_tests()
 
 # COMMAND ----------
 
@@ -515,7 +492,7 @@ async def run_interactive_test():
     print(f"🔧 Sub-agents required: {result.get('required_agents', [])}")
 
 # Run the interactive test
-asyncio.run(run_interactive_test())
+await run_interactive_test()
 
 # COMMAND ----------
 
@@ -540,3 +517,7 @@ asyncio.run(run_interactive_test())
 # MAGIC 2. Replace mock responses with real sub-agent calls
 # MAGIC 3. Add error handling for sub-agent failures
 # MAGIC 4. Implement sub-agent timeout handling
+
+# COMMAND ----------
+
+
