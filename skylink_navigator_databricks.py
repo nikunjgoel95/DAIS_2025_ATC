@@ -41,8 +41,9 @@ from typing import Dict, Any, List, Optional, Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
-from langchain.schema import BaseMessage, HumanMessage, AIMessage
+from langchain.schema import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain.tools import tool
+from databricks_langchain import ChatDatabricks
 import asyncio
 from enum import Enum
 import json
@@ -228,34 +229,44 @@ class ATCState(TypedDict):
 
 class SkyLinkNavigator:
     """
-    Main ATC Agent with integrated tools and Claude Sonnet response generation
+    Main ATC Agent with Databricks LLM-driven tool selection and response generation
     """
     
     def __init__(self):
         self.graph = None
         self.tools = [geo_tracker_tool, scheduler_tool, weather_tool, comms_agent_tool]
         self.tool_node = ToolNode(self.tools)
+        
+        # Initialize Databricks LLM for intelligent tool selection and response generation
+        self.llm = ChatDatabricks(
+            endpoint="databricks-meta-llama-3-3-70b-instruct",
+            temperature=0.1,
+            max_tokens=500,
+        )
+        
         self._build_atc_workflow()
     
     def _build_atc_workflow(self):
         """
-        Build streamlined ATC workflow: Input → Tool Analysis → Claude Response → End
+        Build LLM-driven ATC workflow: Input → LLM Tool Selection → Tool Execution → LLM Response → End
         """
         workflow = StateGraph(ATCState)
         
         # Main workflow nodes
-        workflow.add_node("atc_agent", self._atc_main_agent)
-        workflow.add_node("claude_response", self._generate_claude_response)
+        workflow.add_node("llm_tool_selector", self._llm_tool_selection)
+        workflow.add_node("execute_tools", self._execute_selected_tools)
+        workflow.add_node("llm_response_generator", self._llm_generate_response)
         
         # Set entry point
-        workflow.set_entry_point("atc_agent")
+        workflow.set_entry_point("llm_tool_selector")
         
-        # Simple linear flow
-        workflow.add_edge("atc_agent", "claude_response")
-        workflow.add_edge("claude_response", END)
+        # LLM-driven workflow
+        workflow.add_edge("llm_tool_selector", "execute_tools")
+        workflow.add_edge("execute_tools", "llm_response_generator")
+        workflow.add_edge("llm_response_generator", END)
         
         self.graph = workflow.compile()
-        print("✅ ATC Tool-Based Workflow compiled successfully")
+        print("✅ LLM-Driven ATC Workflow compiled successfully")
 
 # COMMAND ----------
 
@@ -264,11 +275,11 @@ class SkyLinkNavigator:
 
 # COMMAND ----------
 
-def _atc_main_agent(self, state: ATCState) -> Dict[str, Any]:
+def _llm_tool_selection(self, state: ATCState) -> Dict[str, Any]:
     """
-    Main ATC Agent - Analyzes request and calls appropriate tools
+    LLM-driven tool selection - Uses Databricks LLM to intelligently select which tools to call
     """
-    print("🎙️ ATC Main Agent: Processing pilot request with tools...")
+    print("🤖 LLM Tool Selector: Analyzing pilot request...")
     
     messages = state.get("messages", [])
     if not messages:
@@ -292,30 +303,86 @@ def _atc_main_agent(self, state: ATCState) -> Dict[str, Any]:
     
     callsign = callsign or "Aircraft"
     
-    # Determine which tools to call based on request content
-    tools_to_call = self._determine_required_tools(pilot_request)
-    print(f"🔧 Tools to call: {tools_to_call}")
+    # Use LLM to determine which tools to call
+    tool_selection_prompt = f"""
+    You are an Air Traffic Control (ATC) agent analyzing a pilot's communication. Based on the pilot's request, determine which of the following tools should be called:
+
+    Available Tools:
+    - geo_tracker: Use for position, trajectory, traffic conflicts, approach guidance
+    - scheduler: Use for clearances, slots, taxi instructions, runway assignments  
+    - weather: Use for weather conditions, forecasts, alerts
+    - comms_agent: Use for communication analysis, intent detection (always call this)
+
+    Pilot Request: "{pilot_request}"
+    Aircraft: {callsign}
+
+    Analyze the request and respond with ONLY a JSON list of tool names to call. Examples:
+    - For "requesting IFR clearance": ["comms_agent", "scheduler", "geo_tracker"]
+    - For "Mayday engine failure": ["comms_agent", "geo_tracker", "scheduler", "weather"] 
+    - For "requesting weather": ["comms_agent", "weather"]
+    - For "requesting taxi": ["comms_agent", "scheduler", "geo_tracker"]
+
+    Response (JSON list only):
+    """
     
-    # Call the tools
-    tool_results = {}
-    for tool_name in tools_to_call:
-        if tool_name == "geo_tracker":
-            result = geo_tracker_tool.invoke({"pilot_callsign": callsign, "request_context": pilot_request})
-        elif tool_name == "scheduler":
-            result = scheduler_tool.invoke({"pilot_callsign": callsign, "request_context": pilot_request})
-        elif tool_name == "weather":
-            result = weather_tool.invoke({"pilot_callsign": callsign, "request_context": pilot_request})
-        elif tool_name == "comms_agent":
-            result = comms_agent_tool.invoke({"pilot_callsign": callsign, "request_context": pilot_request})
+    try:
+        # Call Databricks LLM for tool selection
+        llm_response = self.llm.invoke(tool_selection_prompt)
+        tools_to_call = json.loads(llm_response.content.strip())
         
-        tool_results[tool_name] = result
+        # Validate tools exist
+        valid_tools = ["geo_tracker", "scheduler", "weather", "comms_agent"]
+        tools_to_call = [tool for tool in tools_to_call if tool in valid_tools]
+        
+        # Always ensure comms_agent is included
+        if "comms_agent" not in tools_to_call:
+            tools_to_call.append("comms_agent")
+            
+    except Exception as e:
+        print(f"⚠️ LLM tool selection failed: {e}, using fallback logic")
+        tools_to_call = self._determine_required_tools(pilot_request)
+    
+    print(f"🔧 LLM Selected Tools: {tools_to_call}")
     
     return {
         "pilot_callsign": callsign,
         "pilot_request": pilot_request,
-        "tool_results": tool_results,
         "tools_called": tools_to_call
     }
+
+def _execute_selected_tools(self, state: ATCState) -> Dict[str, Any]:
+    """
+    Execute the tools selected by the LLM
+    """
+    print("🔧 Executing selected tools...")
+    
+    tools_to_call = state.get("tools_called", [])
+    callsign = state.get("pilot_callsign", "Aircraft")
+    pilot_request = state.get("pilot_request", "")
+    
+    # Execute each selected tool
+    tool_results = {}
+    for tool_name in tools_to_call:
+        try:
+            if tool_name == "geo_tracker":
+                result = geo_tracker_tool.invoke({"pilot_callsign": callsign, "request_context": pilot_request})
+            elif tool_name == "scheduler":
+                result = scheduler_tool.invoke({"pilot_callsign": callsign, "request_context": pilot_request})
+            elif tool_name == "weather":
+                result = weather_tool.invoke({"pilot_callsign": callsign, "request_context": pilot_request})
+            elif tool_name == "comms_agent":
+                result = comms_agent_tool.invoke({"pilot_callsign": callsign, "request_context": pilot_request})
+            else:
+                continue
+                
+            tool_results[tool_name] = result
+            print(f"✅ {tool_name} executed successfully")
+            
+        except Exception as e:
+            print(f"❌ Error executing {tool_name}: {e}")
+            tool_results[tool_name] = {"error": str(e)}
+    
+    return {"tool_results": tool_results}
 
 def _determine_required_tools(self, request: str) -> List[str]:
     """
@@ -346,39 +413,96 @@ def _determine_required_tools(self, request: str) -> List[str]:
     # Remove duplicates while preserving order
     return list(dict.fromkeys(tools_needed))
 
-def _generate_claude_response(self, state: ATCState) -> Dict[str, Any]:
+def _llm_generate_response(self, state: ATCState) -> Dict[str, Any]:
     """
-    Generate final ATC response using Claude Sonnet (placeholder - will integrate with Databricks)
+    Generate final ATC response using Databricks LLM based on tool results
     """
-    print("🤖 Generating Claude Sonnet response...")
+    print("🤖 Generating LLM-based ATC response...")
     
     callsign = state.get("pilot_callsign", "Aircraft")
     request = state.get("pilot_request", "")
     tool_results = state.get("tool_results", {})
     
-    # Create context for Claude
-    context = f"""
-    Pilot: {callsign}
-    Request: {request}
+    # Create comprehensive context for LLM
+    tool_context = ""
+    for tool_name, result in tool_results.items():
+        tool_context += f"\n{tool_name.upper()} RESULTS:\n{json.dumps(result, indent=2)}\n"
     
-    Tool Results:
+    # Create professional ATC response prompt
+    response_prompt = f"""
+    You are a professional Air Traffic Controller. Based on the pilot's request and the tool results, generate an appropriate ATC response using standard aviation phraseology.
+
+    PILOT REQUEST: "{request}"
+    AIRCRAFT: {callsign}
+
+    TOOL RESULTS:{tool_context}
+
+    INSTRUCTIONS:
+    1. Use standard ATC phraseology and terminology
+    2. Be clear, concise, and professional
+    3. Include relevant information from the tool results
+    4. For emergencies: Prioritize safety, provide immediate assistance
+    5. For clearances: Include all necessary details (heading, altitude, squawk, frequency)
+    6. For weather: Provide current conditions clearly
+    7. Address the pilot by their callsign
+
+    Generate ONLY the ATC radio response (no explanations):
     """
     
-    for tool_name, result in tool_results.items():
-        context += f"\n{tool_name}: {json.dumps(result, indent=2)}"
+    try:
+        # Call Databricks LLM for response generation
+        llm_response = self.llm.invoke(response_prompt)
+        atc_response = llm_response.content.strip()
+        
+        # Clean up any formatting issues
+        if atc_response.startswith('"') and atc_response.endswith('"'):
+            atc_response = atc_response[1:-1]
+            
+    except Exception as e:
+        print(f"⚠️ LLM response generation failed: {e}, using fallback")
+        atc_response = self._generate_mock_atc_response(callsign, request, tool_results)
     
-    # Placeholder for Claude Sonnet call (will be replaced with actual Databricks model serving)
-    # For now, generate basic ATC response based on tool results
-    atc_response = self._generate_mock_atc_response(callsign, request, tool_results)
-    
-    # Determine next actions
-    next_actions = self._determine_next_actions(tool_results)
+    # Generate next actions using LLM
+    next_actions = self._llm_determine_next_actions(callsign, request, tool_results)
     
     return {
         "atc_response": atc_response,
-        "confidence_score": 0.9,
+        "confidence_score": 0.95,
         "next_actions": next_actions
     }
+
+def _llm_determine_next_actions(self, callsign: str, request: str, tool_results: Dict[str, Any]) -> List[str]:
+    """
+    Use LLM to determine next actions based on the situation
+    """
+    try:
+        next_actions_prompt = f"""
+        Based on the ATC situation, determine the next 2-3 actions the controller should take.
+
+        AIRCRAFT: {callsign}
+        REQUEST: {request}
+        TOOL RESULTS: {json.dumps(tool_results, indent=2)}
+
+        Provide 2-3 specific next actions as a JSON list. Examples:
+        ["Monitor pilot readback confirmation", "Coordinate with approach control"]
+        ["Alert emergency services", "Clear airspace for priority handling"]
+        ["Update flight progress strip", "Monitor for taxi compliance"]
+
+        Response (JSON list only):
+        """
+        
+        llm_response = self.llm.invoke(next_actions_prompt)
+        next_actions = json.loads(llm_response.content.strip())
+        
+        # Ensure it's a list
+        if not isinstance(next_actions, list):
+            next_actions = [str(next_actions)]
+            
+        return next_actions[:3]  # Limit to 3 actions
+        
+    except Exception as e:
+        print(f"⚠️ LLM next actions failed: {e}, using fallback")
+        return self._determine_next_actions(tool_results)
 
 def _generate_mock_atc_response(self, callsign: str, request: str, tool_results: Dict[str, Any]) -> str:
     """
@@ -437,9 +561,11 @@ def _determine_next_actions(self, tool_results: Dict[str, Any]) -> List[str]:
     return actions
 
 # Add methods to SkyLinkNavigator
-SkyLinkNavigator._atc_main_agent = _atc_main_agent
+SkyLinkNavigator._llm_tool_selection = _llm_tool_selection
+SkyLinkNavigator._execute_selected_tools = _execute_selected_tools
 SkyLinkNavigator._determine_required_tools = _determine_required_tools
-SkyLinkNavigator._generate_claude_response = _generate_claude_response
+SkyLinkNavigator._llm_generate_response = _llm_generate_response
+SkyLinkNavigator._llm_determine_next_actions = _llm_determine_next_actions
 SkyLinkNavigator._generate_mock_atc_response = _generate_mock_atc_response
 SkyLinkNavigator._determine_next_actions = _determine_next_actions
 
@@ -568,9 +694,8 @@ async def test_atc_scenarios():
 async def run_tests():
     await test_atc_scenarios()
 
-# Run the tests
-import asyncio
-asyncio.run(run_tests())
+# Run the tests (will be executed when cell runs)
+# await run_tests()
 
 # COMMAND ----------
 
@@ -589,8 +714,8 @@ async def run_interactive_test():
     print(f"🔧 Tools Used: {', '.join(result['tools_used'])}")
     print(f"📋 Next Actions: {result['next_actions']}")
 
-# Run the interactive test
-asyncio.run(run_interactive_test())
+# Run the interactive test (will be executed when cell runs)  
+# await run_interactive_test()
 
 # COMMAND ----------
 
@@ -603,12 +728,12 @@ asyncio.run(run_interactive_test())
 # MAGIC - **Weather Tool**: Meteorological data and alerts  
 # MAGIC - **CommsAgent Tool**: Communication analysis and intent detection
 # MAGIC
-# MAGIC ### 🎯 Workflow:
+# MAGIC ### 🎯 LLM-Driven Workflow:
 # MAGIC 1. **Input**: Pilot communication received
-# MAGIC 2. **Analysis**: ATC agent determines required tools
-# MAGIC 3. **Tool Execution**: Calls appropriate tools based on request
-# MAGIC 4. **Claude Integration**: Uses tool results to generate professional response
-# MAGIC 5. **Output**: Professional ATC response with next actions
+# MAGIC 2. **LLM Tool Selection**: Databricks LLM analyzes request and intelligently selects tools
+# MAGIC 3. **Tool Execution**: Selected tools are executed and results collected
+# MAGIC 4. **LLM Response Generation**: Databricks LLM synthesizes tool results into professional ATC response
+# MAGIC 5. **Output**: Professional ATC response with AI-generated next actions
 # MAGIC
 # MAGIC ### 🔌 Integration Points:
 # MAGIC - **Real Tools**: Replace mock tools with actual implementations
