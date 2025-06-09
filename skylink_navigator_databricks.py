@@ -27,6 +27,7 @@
 # COMMAND ----------
 
 # MAGIC %pip install -r requirements.txt
+# MAGIC %pip install langgraph langchain pydantic
 
 # COMMAND ----------
 
@@ -39,7 +40,8 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Annotated
+from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, END
 from langchain.schema import BaseMessage, HumanMessage, AIMessage
 from pydantic import BaseModel, Field
@@ -50,9 +52,21 @@ import json
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Define Core Data Models and States
+# MAGIC ## Define Core Data Models and States (FIXED)
 
 # COMMAND ----------
+
+def update_subagent_data(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+    """Reducer function for merging sub-agent responses"""
+    if not left:
+        return right
+    if not right:
+        return left
+    
+    # Merge dictionaries, with right taking precedence
+    result = left.copy()
+    result.update(right)
+    return result
 
 class PilotRequestType(Enum):
     """Types of pilot requests that SkyLink can handle"""
@@ -62,9 +76,9 @@ class PilotRequestType(Enum):
     EMERGENCY = "emergency"                # Emergency situations (Mayday, Pan-Pan)
     GENERAL_INQUIRY = "general_inquiry"    # General ATC communications
 
-class ATCState(BaseModel):
+class ATCState(TypedDict):
     """
-    Main state management for ATC operations
+    FIXED: Main state management for ATC operations using TypedDict
     
     Processing Phases:
     - ANALYZING: Initial request analysis
@@ -72,24 +86,24 @@ class ATCState(BaseModel):
     - PROCESSING: Sub-agents working (handled externally)
     - SYNTHESIZING: Combining responses into final ATC communication
     """
-    # Core message flow
-    messages: List[BaseMessage] = Field(default_factory=list, description="Conversation history")
+    # Core message flow - FIXED: Use Annotated for proper message handling
+    messages: Annotated[List[BaseMessage], lambda x, y: x + y if isinstance(y, list) else x + [y]]
     
     # Request identification  
-    pilot_callsign: Optional[str] = Field(None, description="Aircraft callsign (e.g., 'N123AB', 'UAL456')")
-    request_type: Optional[str] = Field(None, description="Classified request type")
-    priority_level: str = Field("NORMAL", description="NORMAL, URGENT, or EMERGENCY")
+    pilot_callsign: Optional[str]
+    request_type: Optional[str]
+    priority_level: str
     
     # Processing state
-    current_phase: str = Field("ANALYZING", description="Current processing phase")
-    required_agents: List[str] = Field(default_factory=list, description="Sub-agents needed")
+    current_phase: str
+    required_agents: List[str]
     
-    # Sub-agent data (populated by external sub-agents)
-    subagent_responses: Dict[str, Any] = Field(default_factory=dict, description="Responses from sub-agents")
+    # Sub-agent data - FIXED: Use Annotated to handle multiple updates
+    subagent_responses: Annotated[Dict[str, Any], update_subagent_data]
     
     # Final output
-    final_response: Optional[str] = Field(None, description="Response to pilot")
-    confidence_score: float = Field(0.0, description="Response confidence (0-1)")
+    final_response: Optional[str]
+    confidence_score: float
 
 # COMMAND ----------
 
@@ -121,9 +135,10 @@ class SkyLinkNavigator:
     
     def _build_atc_workflow(self):
         """
-        Build the main ATC workflow using LangGraph
+        Build the main ATC workflow using LangGraph - FIXED VERSION
         """
-        workflow = StateGraph(dict)
+        # FIXED: Use the proper ATCState TypedDict
+        workflow = StateGraph(ATCState)
         
         # Main workflow nodes
         workflow.add_node("atc_main_agent", self._atc_main_coordinator)
@@ -151,7 +166,7 @@ class SkyLinkNavigator:
         workflow.add_edge("atc_synthesize", END)
         
         self.graph = workflow.compile()
-        print("✅ ATC Main Workflow compiled successfully")
+        print("✅ ATC Main Workflow compiled successfully (FIXED)")
 
 # COMMAND ----------
 
@@ -160,16 +175,25 @@ class SkyLinkNavigator:
 
 # COMMAND ----------
 
-def _atc_main_coordinator(self, state: Dict[str, Any]) -> Dict[str, Any]:
+def _atc_main_coordinator(self, state: ATCState) -> Dict[str, Any]:
     """
-    Main ATC Agent - Analyzes pilot requests and sets up routing
+    Main ATC Agent - FIXED: Returns only updated fields to avoid state conflicts
     """
     print("🎙️ ATC Main Agent: Processing pilot request...")
     
     messages = state.get("messages", [])
     if not messages:
-        state["final_response"] = "SkyLink Navigator ready. Please state your request."
-        return state
+        return {
+            "messages": [HumanMessage(content="SkyLink Navigator ready. Please state your request.")],
+            "pilot_callsign": None,
+            "request_type": None,
+            "priority_level": "NORMAL",
+            "current_phase": "ANALYZING",
+            "required_agents": [],
+            "subagent_responses": {},
+            "final_response": None,
+            "confidence_score": 0.0
+        }
         
     latest_message = messages[-1].content.lower()
     print(f"📨 Processing: {latest_message}")
@@ -183,36 +207,43 @@ def _atc_main_coordinator(self, state: Dict[str, Any]) -> Dict[str, Any]:
             callsign = word.upper()
             break
     
-    state["pilot_callsign"] = callsign or "Aircraft"
-    
     # Classify request type and determine required sub-agents
     if "mayday" in latest_message or "emergency" in latest_message or "pan pan" in latest_message:
-        state["request_type"] = PilotRequestType.EMERGENCY.value
-        state["priority_level"] = "EMERGENCY"
-        state["required_agents"] = ["geo_tracker", "scheduler", "weather", "comms_agent"]
+        request_type = PilotRequestType.EMERGENCY.value
+        priority = "EMERGENCY"
+        agents = ["geo_tracker", "scheduler", "weather", "comms_agent"]
         
     elif "clearance" in latest_message or "ifr" in latest_message:
-        state["request_type"] = PilotRequestType.IFR_CLEARANCE.value
-        state["required_agents"] = ["scheduler", "comms_agent"]
+        request_type = PilotRequestType.IFR_CLEARANCE.value
+        priority = "NORMAL"
+        agents = ["scheduler", "comms_agent"]
         
     elif "weather" in latest_message or "metar" in latest_message:
-        state["request_type"] = PilotRequestType.WEATHER_REQUEST.value  
-        state["required_agents"] = ["weather"]
+        request_type = PilotRequestType.WEATHER_REQUEST.value
+        priority = "NORMAL"
+        agents = ["weather"]
         
     elif "traffic" in latest_message or "advisory" in latest_message:
-        state["request_type"] = PilotRequestType.TRAFFIC_ADVISORY.value
-        state["required_agents"] = ["geo_tracker", "comms_agent"]
+        request_type = PilotRequestType.TRAFFIC_ADVISORY.value
+        priority = "NORMAL"
+        agents = ["geo_tracker", "comms_agent"]
         
     else:
-        state["request_type"] = PilotRequestType.GENERAL_INQUIRY.value
-        state["required_agents"] = ["comms_agent"]
+        request_type = PilotRequestType.GENERAL_INQUIRY.value
+        priority = "NORMAL"
+        agents = ["comms_agent"]
     
-    state["current_phase"] = "ROUTING"
+    print(f"🎯 Request Type: {request_type}")
+    print(f"👥 Required Sub-Agents: {agents}")
     
-    print(f"🎯 Request Type: {state['request_type']}")
-    print(f"👥 Required Sub-Agents: {state['required_agents']}")
-    
-    return state
+    # FIXED: Return only the fields that need updating
+    return {
+        "pilot_callsign": callsign or "Aircraft",
+        "request_type": request_type,
+        "priority_level": priority,
+        "current_phase": "ROUTING",
+        "required_agents": agents
+    }
 
 def _decide_routing(self, state: Dict[str, Any]) -> str:
     """
@@ -236,14 +267,9 @@ SkyLinkNavigator._decide_routing = _decide_routing
 
 # COMMAND ----------
 
-def _route_to_subagents(self, state: Dict[str, Any]) -> Dict[str, Any]:
+def _route_to_subagents(self, state: ATCState) -> Dict[str, Any]:
     """
-    Route requests to sub-agents (placeholder - actual agents developed separately)
-    
-    In production, this would:
-    1. Call actual sub-agent services
-    2. Collect their responses
-    3. Store results in state
+    Route requests to sub-agents - FIXED: Returns only subagent_responses
     """
     print("🔀 Routing to sub-agents...")
     
@@ -275,15 +301,14 @@ def _route_to_subagents(self, state: Dict[str, Any]) -> Dict[str, Any]:
                 "communication_quality": "CLEAR"
             }
     
-    state["subagent_responses"] = mock_responses
-    state["current_phase"] = "PROCESSING"
-    
     print(f"📡 Sub-agents called: {required_agents}")
-    return state
+    
+    # FIXED: Return only the subagent_responses field
+    return {"subagent_responses": mock_responses}
 
-def _emergency_handler(self, state: Dict[str, Any]) -> Dict[str, Any]:
+def _emergency_handler(self, state: ATCState) -> Dict[str, Any]:
     """
-    Emergency priority handler - immediate response
+    Emergency priority handler - FIXED: Returns only needed fields
     """
     print("🚨 EMERGENCY: Activating priority protocols...")
     
@@ -298,10 +323,8 @@ def _emergency_handler(self, state: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     
-    state["subagent_responses"] = emergency_response
-    state["current_phase"] = "EMERGENCY_HANDLING"
-    
-    return state
+    # FIXED: Return only the needed fields
+    return {"subagent_responses": emergency_response}
 
 # Add methods to SkyLinkNavigator
 SkyLinkNavigator._route_to_subagents = _route_to_subagents
@@ -314,9 +337,9 @@ SkyLinkNavigator._emergency_handler = _emergency_handler
 
 # COMMAND ----------
 
-def _synthesize_atc_response(self, state: Dict[str, Any]) -> Dict[str, Any]:
+def _synthesize_atc_response(self, state: ATCState) -> Dict[str, Any]:
     """
-    Synthesize sub-agent responses into professional ATC communication
+    Synthesize sub-agent responses - FIXED: Returns only needed fields
     """
     print("🎙️ Synthesizing final ATC response...")
     
@@ -354,23 +377,32 @@ def _synthesize_atc_response(self, state: Dict[str, Any]) -> Dict[str, Any]:
         final_response = f"{callsign}, SkyLink Navigator. Go ahead with your request."
         confidence = 0.7
     
-    state["final_response"] = final_response
-    state["confidence_score"] = confidence
-    state["current_phase"] = "RESPONDING"
-    
     print(f"📻 Response ready (confidence: {confidence*100:.0f}%)")
-    return state
+    
+    # FIXED: Return only the fields that need updating
+    return {
+        "final_response": final_response,
+        "confidence_score": confidence,
+        "current_phase": "RESPONDING"
+    }
 
 async def process_pilot_request(self, message: str) -> Dict[str, Any]:
     """
-    Main entry point for processing pilot requests
+    Main entry point for processing pilot requests - FIXED
     """
     print(f"\n🎙️ SkyLink Navigator: '{message}'")
     
+    # FIXED: Proper initial state with all required fields
     initial_state = {
         "messages": [HumanMessage(content=message)],
+        "pilot_callsign": None,
+        "request_type": None,
+        "priority_level": "NORMAL",
         "current_phase": "ANALYZING",
-        "priority_level": "NORMAL"
+        "required_agents": [],
+        "subagent_responses": {},
+        "final_response": None,
+        "confidence_score": 0.0
     }
     
     try:
@@ -411,6 +443,28 @@ print(f"🔧 Sub-agent interfaces: {list(navigator.available_subagents.keys())}"
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Graph Visualization (FIXED)
+
+# COMMAND ----------
+
+# FIXED: Proper graph visualization with error handling
+try:
+    from IPython.display import Image, display
+    print("🎨 Generating workflow visualization...")
+    
+    # This should work now without state errors
+    mermaid_png = navigator.graph.get_graph().draw_mermaid_png()
+    display(Image(mermaid_png))
+    print("✅ Graph visualization successful!")
+    
+except Exception as e:
+    print(f"❌ Visualization error: {e}")
+    
+    # Fallback text representation
+    print("\n📋 Text-based workflow:")
+    print("START → atc_main_agent → [emergency/normal] → atc_synthesize → END")
+
+# MAGIC %md
 # MAGIC ## Test Main Workflow
 
 # COMMAND ----------
@@ -436,7 +490,13 @@ async def test_main_workflow():
         print(f"📊 Sub-agents needed: {result.get('required_agents', [])}")
         print("-" * 30)
 
-await test_main_workflow()
+# FIXED: Run in async context
+async def run_tests():
+    await test_main_workflow()
+
+# Run the tests
+import asyncio
+asyncio.run(run_tests())
 
 # COMMAND ----------
 
@@ -445,13 +505,17 @@ await test_main_workflow()
 
 # COMMAND ----------
 
-# Test with custom message
-test_message = "SkyLink, this is Cessna N123AB requesting taxi clearance"
+# FIXED: Test with custom message in async context
+async def run_interactive_test():
+    test_message = "SkyLink, this is Cessna N123AB requesting taxi clearance"
+    
+    print(f"📻 Pilot: {test_message}")
+    result = await navigator.process_pilot_request(test_message)
+    print(f"📡 ATC: {result['response']}")
+    print(f"🔧 Sub-agents required: {result.get('required_agents', [])}")
 
-print(f"📻 Pilot: {test_message}")
-result = await navigator.process_pilot_request(test_message)
-print(f"📡 ATC: {result['response']}")
-print(f"🔧 Sub-agents required: {result.get('required_agents', [])}")
+# Run the interactive test
+asyncio.run(run_interactive_test())
 
 # COMMAND ----------
 
