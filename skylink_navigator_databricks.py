@@ -1,13 +1,10 @@
 # Databricks notebook source
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC # SkyLink Navigator - Main ATC Agent
-# MAGIC 
+# MAGIC
 # MAGIC This notebook implements the main SkyLink Navigator agent workflow using LangGraph.
 # MAGIC Sub-agents are developed separately and will be integrated later.
-# MAGIC 
+# MAGIC
 # MAGIC ## Workflow Overview:
 # MAGIC ```
 # MAGIC START → ATC_MAIN_AGENT → [Sub-Agents] → ATC_SYNTHESIZE → END
@@ -29,7 +26,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install langgraph langchain pydantic
+# MAGIC %pip install -r requirements.txt
 
 # COMMAND ----------
 
@@ -460,24 +457,22 @@ print(f"🔧 Sub-agents required: {result.get('required_agents', [])}")
 
 # MAGIC %md  
 # MAGIC ## Workflow Summary
-# MAGIC 
+# MAGIC
 # MAGIC ### ✅ Main ATC Agent Complete:
 # MAGIC - Request analysis and classification
 # MAGIC - Pilot callsign extraction  
 # MAGIC - Sub-agent routing logic
 # MAGIC - Professional ATC response synthesis
 # MAGIC - Emergency priority handling
-# MAGIC 
+# MAGIC
 # MAGIC ### 🔌 Sub-Agent Integration Points:
 # MAGIC - **GeoTracker**: Position/trajectory data
 # MAGIC - **Scheduler**: Clearances and slots
 # MAGIC - **Weather**: Meteorological data
 # MAGIC - **CommsAgent**: Communication analysis
-# MAGIC 
+# MAGIC
 # MAGIC ### 📋 Next Steps:
 # MAGIC 1. Integrate actual sub-agents when ready
 # MAGIC 2. Replace mock responses with real sub-agent calls
 # MAGIC 3. Add error handling for sub-agent failures
 # MAGIC 4. Implement sub-agent timeout handling
-
-# COMMAND ----------
