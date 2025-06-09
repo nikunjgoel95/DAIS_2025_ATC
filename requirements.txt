@@ -3,3 +3,5 @@ langchain
 langchain-community
 databricks-langchain
 mlflow
+pydantic
+typing_extensions==4.14.0 

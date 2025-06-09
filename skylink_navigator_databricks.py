@@ -1,10 +1,7 @@
 # Databricks notebook source
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC # SkyLink Navigator - Multimodal Agent for Air-Traffic Coordination
-# MAGIC 
+# MAGIC
 # MAGIC This notebook implements the main SkyLink Navigator agent using LangGraph for coordinating air traffic control communications.
 
 # COMMAND ----------
@@ -14,7 +11,9 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install langgraph langchain pydantic
+# MAGIC %pip install -r requirements.txt
+# MAGIC
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -403,16 +402,14 @@ except Exception as e:
 
 # MAGIC %md
 # MAGIC ## Next Steps for Development
-# MAGIC 
+# MAGIC
 # MAGIC This notebook provides the foundation for the SkyLink Navigator. Here are the next development steps:
-# MAGIC 
+# MAGIC
 # MAGIC 1. **Implement Sub-Agents**: Create actual implementations for each sub-agent
 # MAGIC 2. **Add NLP Enhancement**: Integrate more sophisticated NLP for request analysis
 # MAGIC 3. **Data Integration**: Connect to real data sources (ADS-B, weather APIs, flight schedules)
 # MAGIC 4. **Unity Catalog Integration**: Set up data governance with Unity Catalog
 # MAGIC 5. **Model Serving Setup**: Deploy the agent using Databricks Model Serving
 # MAGIC 6. **Evaluation Framework**: Implement MLflow evaluation metrics
-# MAGIC 
+# MAGIC
 # MAGIC The current implementation uses mock responses but provides the complete workflow structure for expansion.
-
-# COMMAND ----------
